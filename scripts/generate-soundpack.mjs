@@ -24,8 +24,23 @@ function cyclicNoise(phase, grit) {
   ) * grit;
 }
 
-function engineSample(phase, profile) {
-  const p = phase * Math.PI * 2;
+const V10_TEXTURE = [
+  { gain: 1.04, rasp: 1.09, phase: 0.006, bank: -1 },
+  { gain: 0.97, rasp: 0.94, phase: -0.004, bank: 1 },
+  { gain: 1.02, rasp: 1.02, phase: 0.002, bank: -1 },
+  { gain: 1.08, rasp: 1.14, phase: -0.007, bank: 1 },
+  { gain: 0.95, rasp: 0.9, phase: 0.005, bank: -1 },
+  { gain: 1.01, rasp: 1.05, phase: -0.002, bank: 1 },
+  { gain: 0.98, rasp: 0.96, phase: 0.007, bank: -1 },
+  { gain: 1.06, rasp: 1.11, phase: -0.005, bank: 1 },
+  { gain: 0.96, rasp: 0.92, phase: 0.003, bank: -1 },
+  { gain: 1.03, rasp: 1.07, phase: -0.006, bank: 1 }
+];
+
+function engineSample(phase, profile, cylinder) {
+  const texture = V10_TEXTURE[cylinder % V10_TEXTURE.length];
+  const texturedPhase = (phase + texture.phase + 1) % 1;
+  const p = texturedPhase * Math.PI * 2;
   const core =
     Math.sin(p) * 0.82 +
     Math.sin(p * 2) * 0.32 +
@@ -33,10 +48,11 @@ function engineSample(phase, profile) {
     Math.sin(p * 5) * 0.14 +
     Math.sin(p * 8) * 0.08;
   const exhaust = Math.sign(Math.sin(p * 0.5)) * Math.pow(Math.abs(Math.sin(p * 2.5)), 0.45);
-  const rasp = cyclicNoise(p, profile.grit) * (0.25 + profile.rasp * 0.75);
+  const bankRasp = Math.sin(p * 0.5 + texture.bank * profile.bankColor) * profile.bankColor * 0.12;
+  const rasp = cyclicNoise(p + texture.bank * profile.bankColor, profile.grit) * (0.25 + profile.rasp * texture.rasp * 0.75);
   const whine = Math.sin(p * profile.whineMul + Math.sin(p * 0.25) * 0.08) * profile.whine;
   const mech = Math.sin(p * 13.7) * profile.mech + Math.sin(p * 17.4 + 0.4) * profile.mech * 0.55;
-  return tanhDrive(core * profile.core + exhaust * profile.rasp + rasp + whine + mech, profile.drive);
+  return tanhDrive((core * profile.core + exhaust * profile.rasp + rasp + bankRasp + whine + mech) * texture.gain, profile.drive);
 }
 
 function writeWav(name, samples) {
@@ -76,10 +92,12 @@ function generateLoop(name, rpm, cycles, profile) {
 
   for (let i = 0; i < total; i += 1) {
     const loopPhase = i / total;
-    const cyclePhase = (loopPhase * cycles) % 1;
+    const cyclePosition = loopPhase * cycles;
+    const cyclePhase = cyclePosition % 1;
+    const cylinder = Math.floor(cyclePosition) % V10_TEXTURE.length;
     const slowPhase = (i / total) * Math.PI * 2;
     const loadPulse = 0.88 + Math.sin(slowPhase * profile.loadRate) * 0.035;
-    samples[i] = engineSample(cyclePhase, profile) * profile.amp * loadPulse;
+    samples[i] = engineSample(cyclePhase, profile, cylinder) * profile.amp * loadPulse;
   }
 
   writeWav(name, samples);
@@ -156,6 +174,7 @@ generateLoop('v10_idle.wav', 1500, 200, {
   whine: 0.02,
   whineMul: 9.0,
   mech: 0.03,
+  bankColor: 0.04,
   drive: 1.8,
   loadRate: 2
 });
@@ -168,11 +187,12 @@ generateLoop('v10_low.wav', 3600, 360, {
   whine: 0.04,
   whineMul: 10.5,
   mech: 0.04,
+  bankColor: 0.06,
   drive: 2.25,
   loadRate: 3
 });
 
-generateLoop('v10_mid.wav', 6900, 575, {
+generateLoop('v10_mid.wav', 6900, 580, {
   amp: 0.52,
   core: 0.58,
   rasp: 0.38,
@@ -180,11 +200,12 @@ generateLoop('v10_mid.wav', 6900, 575, {
   whine: 0.08,
   whineMul: 11.2,
   mech: 0.045,
+  bankColor: 0.09,
   drive: 2.8,
   loadRate: 4
 });
 
-generateLoop('v10_high.wav', 10100, 674, {
+generateLoop('v10_high.wav', 10100, 670, {
   amp: 0.48,
   core: 0.42,
   rasp: 0.56,
@@ -192,6 +213,7 @@ generateLoop('v10_high.wav', 10100, 674, {
   whine: 0.14,
   whineMul: 12.4,
   mech: 0.05,
+  bankColor: 0.12,
   drive: 3.3,
   loadRate: 5
 });

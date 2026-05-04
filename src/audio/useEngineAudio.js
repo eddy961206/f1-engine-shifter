@@ -20,6 +20,7 @@ const MASTER_HEADROOM = 0.68;
 const LIMITER_START_RPM = 10250;
 const MIN_UPDATE_DELTA = {
   rpm: 90,
+  rpmVel: 220,
   throttle: 0.025,
   volume: 0.015
 };
@@ -145,7 +146,48 @@ function shiftEnvelope(fx, now) {
   };
 }
 
-export function useEngineAudio({ enabled, rpm, gear, throttle, throttleHeld, brakeHeld, volume, shiftEvent }) {
+function driveToneFor({ rpm, rpmVel, throttle, brakeHeld }) {
+  const rpmNorm = clamp((rpm - MIN_RPM) / (MAX_RPM - MIN_RPM), 0, 1);
+  const accel = clamp(rpmVel / 7200, -1, 1);
+  const positiveLoad = clamp(throttle * 0.85 + Math.max(accel, 0) * 0.35, 0, 1);
+  const engineBrake = clamp((brakeHeld ? 0.55 : 0) + Math.max(-accel, 0) * 0.7 + (1 - throttle) * 0.18, 0, 1);
+
+  return {
+    loopGain: clamp(0.86 + positiveLoad * 0.18 - engineBrake * 0.2, 0.68, 1.12),
+    highBias: clamp(1 + positiveLoad * 0.28 + rpmNorm * 0.1 - engineBrake * 0.16, 0.84, 1.38),
+    lowBias: clamp(1 + engineBrake * 0.22 - positiveLoad * 0.08, 0.88, 1.24),
+    rateLeadRpm: clamp(rpm + Math.max(accel, 0) * 260 - Math.max(-accel, 0) * 180, MIN_RPM, MAX_RPM),
+    whineGain: clamp(0.9 + positiveLoad * 0.18 + engineBrake * 0.25, 0.82, 1.32)
+  };
+}
+
+function oneShotVariation(kind, rpm, throttle, seed) {
+  const rpmNorm = clamp((rpm - MIN_RPM) / (MAX_RPM - MIN_RPM), 0, 1);
+  const jitter = Math.sin(seed * 12.9898) * 0.5 + Math.sin(seed * 78.233) * 0.5;
+  const jitterNorm = jitter - Math.trunc(jitter);
+  const randomOffset = (jitterNorm - 0.5) * 0.05;
+
+  if (kind === 'UP') {
+    return {
+      rate: clamp(0.98 + rpmNorm * 0.1 + randomOffset, 0.94, 1.12),
+      gain: clamp(0.68 + throttle * 0.24 + rpmNorm * 0.16 + randomOffset, 0.55, 1)
+    };
+  }
+
+  if (kind === 'DOWN') {
+    return {
+      rate: clamp(0.91 + rpmNorm * 0.08 + randomOffset, 0.86, 1.04),
+      gain: clamp(0.74 + throttle * 0.16 + rpmNorm * 0.12 - randomOffset, 0.58, 1)
+    };
+  }
+
+  return {
+    rate: clamp(0.95 + rpmNorm * 0.08 + randomOffset, 0.9, 1.08),
+    gain: clamp(0.82 + rpmNorm * 0.18 - randomOffset, 0.68, 1)
+  };
+}
+
+export function useEngineAudio({ enabled, rpm, rpmVel, gear, throttle, throttleHeld, brakeHeld, volume, shiftEvent }) {
   const idle = useAudioPlayer(ENGINE_LOOPS.idle);
   const low = useAudioPlayer(ENGINE_LOOPS.low);
   const mid = useAudioPlayer(ENGINE_LOOPS.mid);
@@ -157,11 +199,12 @@ export function useEngineAudio({ enabled, rpm, gear, throttle, throttleHeld, bra
   const shiftDownA = useAudioPlayer(SHIFT_SOUNDS.down);
   const shiftDownB = useAudioPlayer(SHIFT_SOUNDS.down);
   const startedRef = useRef(false);
-  const lastLoopUpdateRef = useRef({ at: 0, rpm: MIN_RPM, throttle: 0, volume: 0 });
+  const lastLoopUpdateRef = useRef({ at: 0, rpm: MIN_RPM, rpmVel: 0, throttle: 0, volume: 0 });
   const processedShiftRef = useRef(null);
   const shiftPoolRef = useRef({ UP: 0, DOWN: 0 });
   const shiftFxRef = useRef(null);
   const previousThrottleHeldRef = useRef(false);
+  const liftSeedRef = useRef(0);
 
   const engineLoopPlayers = { idle, low, mid, high };
   const shiftPools = {
@@ -200,6 +243,7 @@ export function useEngineAudio({ enabled, rpm, gear, throttle, throttleHeld, bra
     const last = lastLoopUpdateRef.current;
     const meaningfulChange =
       Math.abs(rpm - last.rpm) >= MIN_UPDATE_DELTA.rpm ||
+      Math.abs(rpmVel - last.rpmVel) >= MIN_UPDATE_DELTA.rpmVel ||
       Math.abs(throttle - last.throttle) >= MIN_UPDATE_DELTA.throttle ||
       Math.abs(volume - last.volume) >= MIN_UPDATE_DELTA.volume;
 
@@ -207,11 +251,15 @@ export function useEngineAudio({ enabled, rpm, gear, throttle, throttleHeld, bra
       return;
     }
 
-    lastLoopUpdateRef.current = { at: now, rpm, throttle, volume };
+    lastLoopUpdateRef.current = { at: now, rpm, rpmVel, throttle, volume };
 
     const weights = weightsForRpm(rpm);
+    const driveTone = driveToneFor({ rpm, rpmVel, throttle, brakeHeld });
     const limiter = limiterPulse(rpm, now);
     weights.high *= limiter.highPush;
+    weights.high *= driveTone.highBias;
+    weights.mid *= 0.94 + driveTone.highBias * 0.06;
+    weights.low *= driveTone.lowBias;
 
     const totalWeight = Math.max(1, Object.values(weights).reduce((sum, weight) => sum + weight, 0));
     const audibleThrottle = clamp(throttle + shiftFx.throttleBoost, 0, 1);
@@ -219,9 +267,9 @@ export function useEngineAudio({ enabled, rpm, gear, throttle, throttleHeld, bra
 
     Object.entries(engineLoopPlayers).forEach(([layer, player]) => {
       const baseRpm = LAYER_BASE_RPM[layer];
-      const rate = clamp((rpm / baseRpm) * shiftFx.rateFactor, RATE_LIMIT.min, RATE_LIMIT.max);
+      const rate = clamp((driveTone.rateLeadRpm / baseRpm) * shiftFx.rateFactor, RATE_LIMIT.min, RATE_LIMIT.max);
       const normalizedWeight = weights[layer] / totalWeight;
-      const layerVolume = volume * MASTER_HEADROOM * limiter.gain * shiftFx.loopGain * normalizedWeight * throttleGain;
+      const layerVolume = volume * MASTER_HEADROOM * limiter.gain * shiftFx.loopGain * driveTone.loopGain * normalizedWeight * throttleGain;
       setPlayerRate(player, rate);
       setPlayerVolume(player, layerVolume);
     });
@@ -229,10 +277,10 @@ export function useEngineAudio({ enabled, rpm, gear, throttle, throttleHeld, bra
     const rpmNorm = clamp((rpm - MIN_RPM) / (MAX_RPM - MIN_RPM), 0, 1);
     const whineGear = clamp(gear || 1, 1, 8);
     const whineRate = clamp(0.72 + rpmNorm * 0.78 + whineGear * 0.045, 0.72, 1.72);
-    const whineVolume = volume * 0.16 * smoothstep(0.2, 0.72, rpmNorm) * (0.55 + 0.45 * audibleThrottle);
+    const whineVolume = volume * 0.16 * driveTone.whineGain * smoothstep(0.2, 0.72, rpmNorm) * (0.55 + 0.45 * audibleThrottle);
     setPlayerRate(gearWhine, whineRate);
     setPlayerVolume(gearWhine, whineVolume);
-  }, [enabled, rpm, gear, throttle, volume, idle, low, mid, high, gearWhine]);
+  }, [enabled, rpm, rpmVel, gear, throttle, brakeHeld, volume, idle, low, mid, high, gearWhine]);
 
   useEffect(() => {
     const wasHeld = previousThrottleHeldRef.current;
@@ -243,7 +291,10 @@ export function useEngineAudio({ enabled, rpm, gear, throttle, throttleHeld, bra
     }
 
     try {
-      liftOff.volume = clamp(volume * 0.22 * smoothstep(4200, MAX_RPM, rpm), 0, 0.28);
+      liftSeedRef.current += 1;
+      const variation = oneShotVariation('LIFT', rpm, throttle, liftSeedRef.current);
+      setPlayerRate(liftOff, variation.rate);
+      liftOff.volume = clamp(volume * 0.22 * variation.gain * smoothstep(4200, MAX_RPM, rpm), 0, 0.3);
       Promise.resolve(liftOff.seekTo(0))
         .then(() => liftOff.play())
         .catch(() => {});
@@ -272,12 +323,14 @@ export function useEngineAudio({ enabled, rpm, gear, throttle, throttleHeld, bra
     const player = pool[nextIndex];
 
     try {
-      player.volume = clamp(volume * 0.78 * (0.65 + 0.25 * throttle), 0, 0.9);
+      const variation = oneShotVariation(direction, shiftEvent.rpmBefore || rpm, throttle, shiftEvent.id + nextIndex);
+      setPlayerRate(player, variation.rate);
+      player.volume = clamp(volume * 0.78 * variation.gain * (0.65 + 0.25 * throttle), 0, 0.96);
       Promise.resolve(player.seekTo(0))
         .then(() => player.play())
         .catch(() => {});
     } catch (error) {
       // A missed one-shot is acceptable during fast refresh.
     }
-  }, [enabled, shiftEvent, shiftUpA, shiftUpB, shiftDownA, shiftDownB, volume, throttle]);
+  }, [enabled, shiftEvent, shiftUpA, shiftUpB, shiftDownA, shiftDownB, volume, throttle, rpm]);
 }

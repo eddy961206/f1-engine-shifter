@@ -105,6 +105,7 @@ export default function App() {
   useEngineAudio({
     enabled: running,
     rpm: engine.rpm,
+    rpmVel: engine.rpmVel,
     gear: engine.gear,
     throttle: engine.throttle,
     throttleHeld,
