@@ -10,6 +10,19 @@ const LAYER_BASE_RPM = {
   high: 10100
 };
 
+const RATE_LIMIT = {
+  min: 0.62,
+  max: 1.7
+};
+
+const AUDIO_UPDATE_MS = 90;
+const MASTER_HEADROOM = 0.68;
+const MIN_UPDATE_DELTA = {
+  rpm: 90,
+  throttle: 0.025,
+  volume: 0.015
+};
+
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
@@ -77,11 +90,20 @@ export function useEngineAudio({ enabled, rpm, throttle, volume, shiftEvent }) {
   const low = useAudioPlayer(ENGINE_LOOPS.low);
   const mid = useAudioPlayer(ENGINE_LOOPS.mid);
   const high = useAudioPlayer(ENGINE_LOOPS.high);
-  const shiftUp = useAudioPlayer(SHIFT_SOUNDS.up);
-  const shiftDown = useAudioPlayer(SHIFT_SOUNDS.down);
+  const shiftUpA = useAudioPlayer(SHIFT_SOUNDS.up);
+  const shiftUpB = useAudioPlayer(SHIFT_SOUNDS.up);
+  const shiftDownA = useAudioPlayer(SHIFT_SOUNDS.down);
+  const shiftDownB = useAudioPlayer(SHIFT_SOUNDS.down);
   const startedRef = useRef(false);
+  const lastLoopUpdateRef = useRef({ at: 0, rpm: MIN_RPM, throttle: 0, volume: 0 });
+  const processedShiftRef = useRef(null);
+  const shiftPoolRef = useRef({ UP: 0, DOWN: 0 });
 
   const loopPlayers = { idle, low, mid, high };
+  const shiftPools = {
+    UP: [shiftUpA, shiftUpB],
+    DOWN: [shiftDownA, shiftDownB]
+  };
 
   useEffect(() => {
     setAudioModeAsync({
@@ -105,14 +127,29 @@ export function useEngineAudio({ enabled, rpm, throttle, volume, shiftEvent }) {
   useEffect(() => {
     if (!enabled) return;
 
+    const now = Date.now();
+    const last = lastLoopUpdateRef.current;
+    const meaningfulChange =
+      Math.abs(rpm - last.rpm) >= MIN_UPDATE_DELTA.rpm ||
+      Math.abs(throttle - last.throttle) >= MIN_UPDATE_DELTA.throttle ||
+      Math.abs(volume - last.volume) >= MIN_UPDATE_DELTA.volume;
+
+    if (now - last.at < AUDIO_UPDATE_MS && !meaningfulChange) {
+      return;
+    }
+
+    lastLoopUpdateRef.current = { at: now, rpm, throttle, volume };
+
     const weights = weightsForRpm(rpm);
+    const totalWeight = Math.max(1, Object.values(weights).reduce((sum, weight) => sum + weight, 0));
     const throttleGain = 0.24 + 0.76 * Math.pow(clamp(throttle, 0, 1), 0.72);
-    const redlineGain = rpm > 10250 ? 0.92 + Math.random() * 0.08 : 1;
+    const redlineGain = rpm > 10250 ? 0.9 + 0.08 * Math.sin(now / 34) : 1;
 
     Object.entries(loopPlayers).forEach(([layer, player]) => {
       const baseRpm = LAYER_BASE_RPM[layer];
-      const rate = clamp(rpm / baseRpm, 0.52, 1.82);
-      const layerVolume = volume * redlineGain * weights[layer] * throttleGain;
+      const rate = clamp(rpm / baseRpm, RATE_LIMIT.min, RATE_LIMIT.max);
+      const normalizedWeight = weights[layer] / totalWeight;
+      const layerVolume = volume * MASTER_HEADROOM * redlineGain * normalizedWeight * throttleGain;
       setPlayerRate(player, rate);
       setPlayerVolume(player, layerVolume);
     });
@@ -120,13 +157,23 @@ export function useEngineAudio({ enabled, rpm, throttle, volume, shiftEvent }) {
 
   useEffect(() => {
     if (!enabled || !shiftEvent) return;
-    const player = shiftEvent.direction === 'UP' ? shiftUp : shiftDown;
+    if (processedShiftRef.current === shiftEvent.id) return;
+
+    processedShiftRef.current = shiftEvent.id;
+
+    const direction = shiftEvent.direction === 'UP' ? 'UP' : 'DOWN';
+    const pool = shiftPools[direction];
+    const nextIndex = shiftPoolRef.current[direction] % pool.length;
+    shiftPoolRef.current[direction] = nextIndex + 1;
+    const player = pool[nextIndex];
+
     try {
-      player.volume = clamp(volume * (0.65 + 0.25 * throttle), 0, 1);
-      player.seekTo(0);
-      player.play();
+      player.volume = clamp(volume * 0.78 * (0.65 + 0.25 * throttle), 0, 0.9);
+      Promise.resolve(player.seekTo(0))
+        .then(() => player.play())
+        .catch(() => {});
     } catch (error) {
       // A missed one-shot is acceptable during fast refresh.
     }
-  }, [enabled, shiftEvent, shiftUp, shiftDown, volume, throttle]);
+  }, [enabled, shiftEvent, shiftUpA, shiftUpB, shiftDownA, shiftDownB, volume, throttle]);
 }

@@ -11,6 +11,7 @@ iPhone and Android app version of the original Chrome typing extension. Keyboard
 - Layered V10 sound pack generated locally as WAV assets.
 - Shift-up and downshift one-shots.
 - `expo-audio` playback with local assets, looping layers, playback-rate pitch changes, and volume crossfades.
+- Mobile audio hardening: playback-rate clamping, throttled loop updates, shift one-shot pooling, master headroom, and AppState stop behavior.
 
 ## Real engine audio
 

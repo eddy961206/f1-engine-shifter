@@ -1,6 +1,7 @@
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AppState,
   Pressable,
   SafeAreaView,
   StyleSheet,
@@ -84,8 +85,21 @@ export default function App() {
   const [brakeHeld, setBrakeHeld] = useState(false);
   const [shiftEvent, setShiftEvent] = useState(null);
   const inputRef = useRef({ throttleHeld: false, brakeHeld: false, running: false, autoShift: false });
+  const shiftSeqRef = useRef(0);
 
   inputRef.current = { throttleHeld, brakeHeld, running, autoShift };
+
+  const createShiftEvent = useCallback((direction, gear, current, nextThrottle) => {
+    shiftSeqRef.current += 1;
+    return {
+      id: shiftSeqRef.current,
+      direction,
+      gear,
+      fromGear: current.gear,
+      rpmBefore: Math.round(current.rpm),
+      throttle: nextThrottle
+    };
+  }, []);
 
   useEngineAudio({
     enabled: running,
@@ -102,19 +116,25 @@ export default function App() {
         const next = stepEngine(current, inputRef.current, TICK_MS / 1000);
         if (next.shift) {
           setShiftEvent({
-            id: Date.now(),
-            direction: next.shift,
-            gear: next.gear,
-            fromGear: current.gear,
-            rpmBefore: Math.round(current.rpm),
+            ...createShiftEvent(next.shift, next.gear, current, next.throttle),
             rpmAfter: Math.round(next.rpm),
-            throttle: next.throttle
           });
         }
         return next;
       });
     }, TICK_MS);
     return () => clearInterval(id);
+  }, [createShiftEvent]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') return;
+      setThrottleHeld(false);
+      setBrakeHeld(false);
+      setRunning(false);
+    });
+
+    return () => subscription.remove();
   }, []);
 
   const requestShift = useCallback((direction) => {
@@ -122,18 +142,13 @@ export default function App() {
       const shifted = shiftGear(current, direction);
       if (shifted.shift) {
         setShiftEvent({
-          id: Date.now(),
-          direction,
-          gear: shifted.gear,
-          fromGear: current.gear,
-          rpmBefore: Math.round(current.rpm),
+          ...createShiftEvent(direction, shifted.gear, current, current.throttle),
           rpmAfter: Math.round(shifted.rpm),
-          throttle: current.throttle
         });
       }
       return shifted;
     });
-  }, []);
+  }, [createShiftEvent]);
 
   const bumpVolume = useCallback((delta) => {
     setVolume((current) => clamp(Number((current + delta).toFixed(2)), 0, 1));
