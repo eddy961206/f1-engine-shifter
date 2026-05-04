@@ -64,10 +64,11 @@ function Tachometer({ rpm, throttle, gear }) {
   );
 }
 
-function ControlButton({ label, value, onPress }) {
+function ControlButton({ label, value, onPress, onPressIn }) {
   return (
     <Pressable
       onPress={onPress}
+      onPressIn={onPressIn}
       style={({ pressed }) => [styles.controlButton, pressed && styles.controlButtonPressed]}
     >
       <Text style={styles.controlValue}>{value}</Text>
@@ -174,8 +175,8 @@ export default function App() {
         <Tachometer rpm={engine.rpm} throttle={engine.throttle} gear={engine.gear} />
 
         <View style={styles.paddleRow}>
-          <ControlButton label="GEAR DOWN" value="-" onPress={() => requestShift('DOWN')} />
-          <ControlButton label="GEAR UP" value="+" onPress={() => requestShift('UP')} />
+          <ControlButton label="GEAR DOWN" value="-" onPressIn={() => requestShift('DOWN')} />
+          <ControlButton label="GEAR UP" value="+" onPressIn={() => requestShift('UP')} />
         </View>
 
         <View style={styles.driveRow}>

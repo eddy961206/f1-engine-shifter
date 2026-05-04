@@ -17,10 +17,24 @@ const RATE_LIMIT = {
 
 const AUDIO_UPDATE_MS = 90;
 const MASTER_HEADROOM = 0.68;
+const LIMITER_START_RPM = 10250;
 const MIN_UPDATE_DELTA = {
   rpm: 90,
   throttle: 0.025,
   volume: 0.015
+};
+
+const SHIFT_FX = {
+  UP: {
+    durationMs: 135,
+    cutFloor: 0.34,
+    rateDip: 0.965
+  },
+  DOWN: {
+    durationMs: 180,
+    blipGain: 0.3,
+    rateBoost: 1.035
+  }
 };
 
 function clamp(value, min, max) {
@@ -85,6 +99,52 @@ function weightsForRpm(rpm) {
   };
 }
 
+function limiterPulse(rpm, now) {
+  if (rpm < LIMITER_START_RPM) {
+    return { gain: 1, highPush: 1 };
+  }
+
+  const intensity = clamp((rpm - LIMITER_START_RPM) / (MAX_RPM - LIMITER_START_RPM), 0, 1);
+  const phase = (now / (58 - 18 * intensity)) % 1;
+  const cut = phase < 0.34 + intensity * 0.2 ? 1 : 0;
+  const gain = cut ? 1 - intensity * 0.38 : 0.84 + intensity * 0.1;
+
+  return {
+    gain,
+    highPush: 1 + intensity * 0.32
+  };
+}
+
+function shiftEnvelope(fx, now) {
+  if (!fx) {
+    return { active: false, loopGain: 1, rateFactor: 1, throttleBoost: 0 };
+  }
+
+  const elapsed = now - fx.startedAt;
+  const progress = clamp(elapsed / fx.durationMs, 0, 1);
+  if (progress >= 1) {
+    return { active: false, loopGain: 1, rateFactor: 1, throttleBoost: 0 };
+  }
+
+  const release = smoothstep(0.18, 1, progress);
+  if (fx.direction === 'UP') {
+    return {
+      active: true,
+      loopGain: fx.cutFloor + (1 - fx.cutFloor) * release,
+      rateFactor: fx.rateDip + (1 - fx.rateDip) * release,
+      throttleBoost: 0
+    };
+  }
+
+  const blip = 1 - smoothstep(0.2, 1, progress);
+  return {
+    active: true,
+    loopGain: 1 + fx.blipGain * blip,
+    rateFactor: 1 + (fx.rateBoost - 1) * blip,
+    throttleBoost: 0.18 * blip
+  };
+}
+
 export function useEngineAudio({ enabled, rpm, throttle, volume, shiftEvent }) {
   const idle = useAudioPlayer(ENGINE_LOOPS.idle);
   const low = useAudioPlayer(ENGINE_LOOPS.low);
@@ -98,6 +158,7 @@ export function useEngineAudio({ enabled, rpm, throttle, volume, shiftEvent }) {
   const lastLoopUpdateRef = useRef({ at: 0, rpm: MIN_RPM, throttle: 0, volume: 0 });
   const processedShiftRef = useRef(null);
   const shiftPoolRef = useRef({ UP: 0, DOWN: 0 });
+  const shiftFxRef = useRef(null);
 
   const loopPlayers = { idle, low, mid, high };
   const shiftPools = {
@@ -128,28 +189,36 @@ export function useEngineAudio({ enabled, rpm, throttle, volume, shiftEvent }) {
     if (!enabled) return;
 
     const now = Date.now();
+    const shiftFx = shiftEnvelope(shiftFxRef.current, now);
+    if (!shiftFx.active) {
+      shiftFxRef.current = null;
+    }
+
     const last = lastLoopUpdateRef.current;
     const meaningfulChange =
       Math.abs(rpm - last.rpm) >= MIN_UPDATE_DELTA.rpm ||
       Math.abs(throttle - last.throttle) >= MIN_UPDATE_DELTA.throttle ||
       Math.abs(volume - last.volume) >= MIN_UPDATE_DELTA.volume;
 
-    if (now - last.at < AUDIO_UPDATE_MS && !meaningfulChange) {
+    if (now - last.at < AUDIO_UPDATE_MS && !meaningfulChange && !shiftFx.active) {
       return;
     }
 
     lastLoopUpdateRef.current = { at: now, rpm, throttle, volume };
 
     const weights = weightsForRpm(rpm);
+    const limiter = limiterPulse(rpm, now);
+    weights.high *= limiter.highPush;
+
     const totalWeight = Math.max(1, Object.values(weights).reduce((sum, weight) => sum + weight, 0));
-    const throttleGain = 0.24 + 0.76 * Math.pow(clamp(throttle, 0, 1), 0.72);
-    const redlineGain = rpm > 10250 ? 0.9 + 0.08 * Math.sin(now / 34) : 1;
+    const audibleThrottle = clamp(throttle + shiftFx.throttleBoost, 0, 1);
+    const throttleGain = 0.24 + 0.76 * Math.pow(audibleThrottle, 0.72);
 
     Object.entries(loopPlayers).forEach(([layer, player]) => {
       const baseRpm = LAYER_BASE_RPM[layer];
-      const rate = clamp(rpm / baseRpm, RATE_LIMIT.min, RATE_LIMIT.max);
+      const rate = clamp((rpm / baseRpm) * shiftFx.rateFactor, RATE_LIMIT.min, RATE_LIMIT.max);
       const normalizedWeight = weights[layer] / totalWeight;
-      const layerVolume = volume * MASTER_HEADROOM * redlineGain * normalizedWeight * throttleGain;
+      const layerVolume = volume * MASTER_HEADROOM * limiter.gain * shiftFx.loopGain * normalizedWeight * throttleGain;
       setPlayerRate(player, rate);
       setPlayerVolume(player, layerVolume);
     });
@@ -162,6 +231,13 @@ export function useEngineAudio({ enabled, rpm, throttle, volume, shiftEvent }) {
     processedShiftRef.current = shiftEvent.id;
 
     const direction = shiftEvent.direction === 'UP' ? 'UP' : 'DOWN';
+    shiftFxRef.current = {
+      startedAt: Date.now(),
+      direction,
+      ...SHIFT_FX[direction]
+    };
+    lastLoopUpdateRef.current.at = 0;
+
     const pool = shiftPools[direction];
     const nextIndex = shiftPoolRef.current[direction] % pool.length;
     shiftPoolRef.current[direction] = nextIndex + 1;

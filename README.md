@@ -12,6 +12,7 @@ iPhone and Android app version of the original Chrome typing extension. Keyboard
 - Shift-up and downshift one-shots.
 - `expo-audio` playback with local assets, looping layers, playback-rate pitch changes, and volume crossfades.
 - Mobile audio hardening: playback-rate clamping, throttled loop updates, shift one-shot pooling, master headroom, and AppState stop behavior.
+- Driving feel polish: instant paddle shifts, shift cut/blip envelope, and redline limiter cut pulses.
 
 ## Real engine audio
 
