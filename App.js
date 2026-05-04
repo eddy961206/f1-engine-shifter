@@ -107,6 +107,8 @@ export default function App() {
     rpm: engine.rpm,
     gear: engine.gear,
     throttle: engine.throttle,
+    throttleHeld,
+    brakeHeld,
     volume,
     shiftEvent
   });

@@ -9,3 +9,9 @@ export const SHIFT_SOUNDS = {
   up: require('../../assets/audio/shift_up.wav'),
   down: require('../../assets/audio/shift_down.wav')
 };
+
+export const GEAR_WHINE = require('../../assets/audio/gear_whine.wav');
+
+export const DRIVE_SOUNDS = {
+  liftOff: require('../../assets/audio/lift_off.wav')
+};

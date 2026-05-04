@@ -68,14 +68,15 @@ function writeWav(name, samples) {
   writeFileSync(join(outDir, name), buffer);
 }
 
-function generateLoop(name, rpm, durationSec, profile) {
-  const total = Math.floor(sampleRate * durationSec);
+function generateLoop(name, rpm, cycles, profile) {
   const firingHz = (rpm / 60) * 5;
+  const durationSec = cycles / firingHz;
+  const total = Math.round(sampleRate * durationSec);
   const samples = new Float32Array(total);
 
   for (let i = 0; i < total; i += 1) {
-    const t = i / sampleRate;
-    const cyclePhase = (t * firingHz) % 1;
+    const loopPhase = i / total;
+    const cyclePhase = (loopPhase * cycles) % 1;
     const slowPhase = (i / total) * Math.PI * 2;
     const loadPulse = 0.88 + Math.sin(slowPhase * profile.loadRate) * 0.035;
     samples[i] = engineSample(cyclePhase, profile) * profile.amp * loadPulse;
@@ -112,7 +113,42 @@ function generateShiftDown() {
   writeWav('shift_down.wav', samples);
 }
 
-generateLoop('v10_idle.wav', 1500, 1.6, {
+function generateGearWhine() {
+  const total = Math.floor(sampleRate * 1.1);
+  const samples = new Float32Array(total);
+  const cycles = 820;
+
+  for (let i = 0; i < total; i += 1) {
+    const loopPhase = i / total;
+    const phase = Math.PI * 2 * cycles * loopPhase;
+    const shimmer = Math.sin(Math.PI * 2 * 17 * loopPhase) * 0.035;
+    const whine =
+      Math.sin(phase + shimmer) * 0.62 +
+      Math.sin(phase * 2.01 + 0.3) * 0.22 +
+      Math.sin(phase * 3.02 + 1.2) * 0.08;
+    samples[i] = tanhDrive(whine, 1.6) * 0.38;
+  }
+
+  writeWav('gear_whine.wav', samples);
+}
+
+function generateLiftOff() {
+  const total = Math.floor(sampleRate * 0.18);
+  const samples = new Float32Array(total);
+
+  for (let i = 0; i < total; i += 1) {
+    const t = i / sampleRate;
+    const env = Math.exp(-t * 22) * Math.min(1, t * 150);
+    const raspPhase = Math.PI * 2 * (780 + 540 * Math.exp(-t * 18)) * t;
+    const bark = Math.sin(raspPhase) * 0.38 + cyclicNoise(raspPhase, 0.62) * 0.55;
+    const pop = t > 0.03 && t < 0.065 ? cyclicNoise(raspPhase * 1.4, 0.7) * 0.5 : 0;
+    samples[i] = tanhDrive((bark + pop) * env, 3.1) * 0.52;
+  }
+
+  writeWav('lift_off.wav', samples);
+}
+
+generateLoop('v10_idle.wav', 1500, 200, {
   amp: 0.54,
   core: 0.88,
   rasp: 0.12,
@@ -124,7 +160,7 @@ generateLoop('v10_idle.wav', 1500, 1.6, {
   loadRate: 2
 });
 
-generateLoop('v10_low.wav', 3600, 1.2, {
+generateLoop('v10_low.wav', 3600, 360, {
   amp: 0.55,
   core: 0.75,
   rasp: 0.24,
@@ -136,7 +172,7 @@ generateLoop('v10_low.wav', 3600, 1.2, {
   loadRate: 3
 });
 
-generateLoop('v10_mid.wav', 6900, 1.0, {
+generateLoop('v10_mid.wav', 6900, 575, {
   amp: 0.52,
   core: 0.58,
   rasp: 0.38,
@@ -148,7 +184,7 @@ generateLoop('v10_mid.wav', 6900, 1.0, {
   loadRate: 4
 });
 
-generateLoop('v10_high.wav', 10100, 0.8, {
+generateLoop('v10_high.wav', 10100, 674, {
   amp: 0.48,
   core: 0.42,
   rasp: 0.56,
@@ -162,5 +198,7 @@ generateLoop('v10_high.wav', 10100, 0.8, {
 
 generateShiftUp();
 generateShiftDown();
+generateGearWhine();
+generateLiftOff();
 
 console.log(`Generated sound pack in ${outDir}`);

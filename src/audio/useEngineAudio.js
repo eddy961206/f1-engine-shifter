@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { setAudioModeAsync, useAudioPlayer } from 'expo-audio';
 import { MAX_RPM, MIN_RPM } from '../engine/simulation';
-import { ENGINE_LOOPS, SHIFT_SOUNDS } from './audioAssets';
+import { DRIVE_SOUNDS, ENGINE_LOOPS, GEAR_WHINE, SHIFT_SOUNDS } from './audioAssets';
 
 const LAYER_BASE_RPM = {
   idle: 1500,
@@ -145,11 +145,13 @@ function shiftEnvelope(fx, now) {
   };
 }
 
-export function useEngineAudio({ enabled, rpm, throttle, volume, shiftEvent }) {
+export function useEngineAudio({ enabled, rpm, gear, throttle, throttleHeld, brakeHeld, volume, shiftEvent }) {
   const idle = useAudioPlayer(ENGINE_LOOPS.idle);
   const low = useAudioPlayer(ENGINE_LOOPS.low);
   const mid = useAudioPlayer(ENGINE_LOOPS.mid);
   const high = useAudioPlayer(ENGINE_LOOPS.high);
+  const gearWhine = useAudioPlayer(GEAR_WHINE);
+  const liftOff = useAudioPlayer(DRIVE_SOUNDS.liftOff);
   const shiftUpA = useAudioPlayer(SHIFT_SOUNDS.up);
   const shiftUpB = useAudioPlayer(SHIFT_SOUNDS.up);
   const shiftDownA = useAudioPlayer(SHIFT_SOUNDS.down);
@@ -159,8 +161,9 @@ export function useEngineAudio({ enabled, rpm, throttle, volume, shiftEvent }) {
   const processedShiftRef = useRef(null);
   const shiftPoolRef = useRef({ UP: 0, DOWN: 0 });
   const shiftFxRef = useRef(null);
+  const previousThrottleHeldRef = useRef(false);
 
-  const loopPlayers = { idle, low, mid, high };
+  const engineLoopPlayers = { idle, low, mid, high };
   const shiftPools = {
     UP: [shiftUpA, shiftUpB],
     DOWN: [shiftDownA, shiftDownB]
@@ -176,14 +179,14 @@ export function useEngineAudio({ enabled, rpm, throttle, volume, shiftEvent }) {
 
   useEffect(() => {
     if (enabled && !startedRef.current) {
-      Object.values(loopPlayers).forEach(startLoop);
+      [...Object.values(engineLoopPlayers), gearWhine].forEach(startLoop);
       startedRef.current = true;
     }
     if (!enabled && startedRef.current) {
-      Object.values(loopPlayers).forEach(stopLoop);
+      [...Object.values(engineLoopPlayers), gearWhine].forEach(stopLoop);
       startedRef.current = false;
     }
-  }, [enabled, idle, low, mid, high]);
+  }, [enabled, idle, low, mid, high, gearWhine]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -214,7 +217,7 @@ export function useEngineAudio({ enabled, rpm, throttle, volume, shiftEvent }) {
     const audibleThrottle = clamp(throttle + shiftFx.throttleBoost, 0, 1);
     const throttleGain = 0.24 + 0.76 * Math.pow(audibleThrottle, 0.72);
 
-    Object.entries(loopPlayers).forEach(([layer, player]) => {
+    Object.entries(engineLoopPlayers).forEach(([layer, player]) => {
       const baseRpm = LAYER_BASE_RPM[layer];
       const rate = clamp((rpm / baseRpm) * shiftFx.rateFactor, RATE_LIMIT.min, RATE_LIMIT.max);
       const normalizedWeight = weights[layer] / totalWeight;
@@ -222,7 +225,32 @@ export function useEngineAudio({ enabled, rpm, throttle, volume, shiftEvent }) {
       setPlayerRate(player, rate);
       setPlayerVolume(player, layerVolume);
     });
-  }, [enabled, rpm, throttle, volume, idle, low, mid, high]);
+
+    const rpmNorm = clamp((rpm - MIN_RPM) / (MAX_RPM - MIN_RPM), 0, 1);
+    const whineGear = clamp(gear || 1, 1, 8);
+    const whineRate = clamp(0.72 + rpmNorm * 0.78 + whineGear * 0.045, 0.72, 1.72);
+    const whineVolume = volume * 0.16 * smoothstep(0.2, 0.72, rpmNorm) * (0.55 + 0.45 * audibleThrottle);
+    setPlayerRate(gearWhine, whineRate);
+    setPlayerVolume(gearWhine, whineVolume);
+  }, [enabled, rpm, gear, throttle, volume, idle, low, mid, high, gearWhine]);
+
+  useEffect(() => {
+    const wasHeld = previousThrottleHeldRef.current;
+    previousThrottleHeldRef.current = Boolean(throttleHeld);
+
+    if (!enabled || !wasHeld || throttleHeld || brakeHeld || rpm < 4200 || throttle < 0.35) {
+      return;
+    }
+
+    try {
+      liftOff.volume = clamp(volume * 0.22 * smoothstep(4200, MAX_RPM, rpm), 0, 0.28);
+      Promise.resolve(liftOff.seekTo(0))
+        .then(() => liftOff.play())
+        .catch(() => {});
+    } catch (error) {
+      // Lift-off bark is decorative; skip if the player is not ready.
+    }
+  }, [enabled, throttleHeld, brakeHeld, rpm, throttle, volume, liftOff]);
 
   useEffect(() => {
     if (!enabled || !shiftEvent) return;
