@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const outDir = join(__dirname, '..', 'assets', 'audio');
 const sampleRate = 44100;
+const soundReport = [];
 
 mkdirSync(outDir, { recursive: true });
 
@@ -22,6 +23,91 @@ function cyclicNoise(phase, grit) {
     Math.sin(phase * 41.0 + 1.7) * 0.28 +
     Math.sin(phase * 73.0 + 0.2) * 0.17
   ) * grit;
+}
+
+function targetPeakFor(name) {
+  if (name.startsWith('v10_')) return 0.72;
+  if (name === 'gear_whine.wav') return 0.42;
+  if (name === 'airbox_scream.wav') return 0.34;
+  if (name === 'lift_off.wav') return 0.52;
+  if (name === 'throttle_on.wav') return 0.46;
+  if (name.startsWith('overrun_')) return 0.48;
+  if (name.startsWith('shift_')) return 0.64;
+  return 0.58;
+}
+
+function measureSamples(samples) {
+  const stereo = samples.left && samples.right;
+  let peak = 0;
+  let monoPeak = 0;
+  let sumSquares = 0;
+  let count = 0;
+
+  if (stereo) {
+    const sampleCount = Math.min(samples.left.length, samples.right.length);
+    for (let index = 0; index < sampleCount; index += 1) {
+      const left = samples.left[index];
+      const right = samples.right[index];
+      const mono = (left + right) * 0.5;
+      peak = Math.max(peak, Math.abs(left), Math.abs(right));
+      monoPeak = Math.max(monoPeak, Math.abs(mono));
+      sumSquares += left * left + right * right;
+      count += 2;
+    }
+  } else {
+    for (let index = 0; index < samples.length; index += 1) {
+      const value = samples[index];
+      peak = Math.max(peak, Math.abs(value));
+      sumSquares += value * value;
+      count += 1;
+    }
+    monoPeak = peak;
+  }
+
+  return {
+    peak,
+    rms: count > 0 ? Math.sqrt(sumSquares / count) : 0,
+    monoPeak
+  };
+}
+
+function scaleSamples(samples, gain) {
+  if (samples.left && samples.right) {
+    const sampleCount = Math.min(samples.left.length, samples.right.length);
+    const left = new Float32Array(sampleCount);
+    const right = new Float32Array(sampleCount);
+    for (let index = 0; index < sampleCount; index += 1) {
+      left[index] = samples.left[index] * gain;
+      right[index] = samples.right[index] * gain;
+    }
+    return { left, right };
+  }
+
+  const rendered = new Float32Array(samples.length);
+  for (let index = 0; index < samples.length; index += 1) {
+    rendered[index] = samples[index] * gain;
+  }
+  return rendered;
+}
+
+function normalizeSamples(name, samples) {
+  const before = measureSamples(samples);
+  const targetPeak = targetPeakFor(name);
+  const gain = before.peak > 0 ? Math.min(targetPeak / before.peak, 1.8) : 1;
+  const normalized = scaleSamples(samples, gain);
+  const after = measureSamples(normalized);
+
+  soundReport.push({
+    name,
+    targetPeak,
+    gain,
+    peak: after.peak,
+    rms: after.rms,
+    monoPeak: after.monoPeak,
+    monoRatio: after.peak > 0 ? after.monoPeak / after.peak : 0
+  });
+
+  return normalized;
 }
 
 const V10_TEXTURE = [
@@ -56,11 +142,12 @@ function engineSample(phase, profile, cylinder) {
 }
 
 function writeWav(name, samples) {
-  const stereo = samples.left && samples.right;
+  const normalizedSamples = normalizeSamples(name, samples);
+  const stereo = normalizedSamples.left && normalizedSamples.right;
   const channels = stereo ? 2 : 1;
   const bitsPerSample = 16;
   const bytesPerSample = bitsPerSample / 8;
-  const sampleCount = stereo ? Math.min(samples.left.length, samples.right.length) : samples.length;
+  const sampleCount = stereo ? Math.min(normalizedSamples.left.length, normalizedSamples.right.length) : normalizedSamples.length;
   const dataSize = sampleCount * channels * bytesPerSample;
   const buffer = Buffer.alloc(44 + dataSize);
 
@@ -80,13 +167,13 @@ function writeWav(name, samples) {
 
   for (let index = 0; index < sampleCount; index += 1) {
     if (stereo) {
-      const left = clamp(samples.left[index], -1, 1);
-      const right = clamp(samples.right[index], -1, 1);
+      const left = clamp(normalizedSamples.left[index], -1, 1);
+      const right = clamp(normalizedSamples.right[index], -1, 1);
       const offset = 44 + index * channels * bytesPerSample;
       buffer.writeInt16LE(Math.round(left * 32767), offset);
       buffer.writeInt16LE(Math.round(right * 32767), offset + bytesPerSample);
     } else {
-      const value = clamp(samples[index], -1, 1);
+      const value = clamp(normalizedSamples[index], -1, 1);
       buffer.writeInt16LE(Math.round(value * 32767), 44 + index * bytesPerSample);
     }
   }
@@ -309,3 +396,10 @@ generateOverrunPop('overrun_b.wav', 2, 0.92);
 generateAirboxScream();
 
 console.log(`Generated sound pack in ${outDir}`);
+console.log('Sound pack level report:');
+soundReport.forEach(({ name, targetPeak, gain, peak, rms, monoRatio }) => {
+  const monoNote = name.startsWith('v10_') ? ` mono=${monoRatio.toFixed(2)}` : '';
+  console.log(
+    `- ${name}: target=${targetPeak.toFixed(2)} gain=${gain.toFixed(2)} peak=${peak.toFixed(2)} rms=${rms.toFixed(3)}${monoNote}`
+  );
+});

@@ -87,6 +87,7 @@ export default function App() {
   const [shiftEvent, setShiftEvent] = useState(null);
   const inputRef = useRef({ throttleHeld: false, brakeHeld: false, running: false, autoShift: false });
   const shiftSeqRef = useRef(0);
+  const lastTickAtRef = useRef(Date.now());
 
   inputRef.current = { throttleHeld, brakeHeld, running, autoShift };
 
@@ -116,8 +117,12 @@ export default function App() {
 
   useEffect(() => {
     const id = setInterval(() => {
+      const now = Date.now();
+      const dt = clamp((now - lastTickAtRef.current) / 1000, 0.012, 0.09);
+      lastTickAtRef.current = now;
+
       setEngine((current) => {
-        const next = stepEngine(current, inputRef.current, TICK_MS / 1000);
+        const next = stepEngine(current, inputRef.current, dt);
         if (next.shift) {
           setShiftEvent({
             ...createShiftEvent(next.shift, next.gear, current, next.throttle),
@@ -132,6 +137,7 @@ export default function App() {
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (state) => {
+      lastTickAtRef.current = Date.now();
       if (state === 'active') return;
       setThrottleHeld(false);
       setBrakeHeld(false);

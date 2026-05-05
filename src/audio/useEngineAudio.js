@@ -18,6 +18,9 @@ const RATE_LIMIT = {
 const AUDIO_UPDATE_MS = 90;
 const MASTER_HEADROOM = 0.68;
 const LIMITER_START_RPM = 10250;
+const LOOP_RATE_DELTA = 0.004;
+const LOOP_VOLUME_DELTA = 0.006;
+const SILENT_LOOP_VOLUME = 0.003;
 const MIN_UPDATE_DELTA = {
   rpm: 90,
   rpmVel: 220,
@@ -72,6 +75,30 @@ function setPlayerVolume(player, volume) {
   } catch (error) {
     // Ignore readiness races.
   }
+}
+
+function applyLoopParams(cacheRef, key, player, { rate, volume, force = false }) {
+  const targetRate = clamp(rate, RATE_LIMIT.min, RATE_LIMIT.max);
+  const targetVolume = clamp(volume, 0, 1);
+  const cache = cacheRef.current[key] || {};
+  const audible = targetVolume >= SILENT_LOOP_VOLUME;
+  const rateChanged = typeof cache.rate !== 'number' || Math.abs(targetRate - cache.rate) >= LOOP_RATE_DELTA;
+  const volumeChanged =
+    typeof cache.volume !== 'number' ||
+    Math.abs(targetVolume - cache.volume) >= LOOP_VOLUME_DELTA ||
+    (targetVolume === 0 && cache.volume !== 0);
+
+  if (audible && (force || rateChanged)) {
+    setPlayerRate(player, targetRate);
+    cache.rate = targetRate;
+  }
+
+  if (force || volumeChanged) {
+    setPlayerVolume(player, targetVolume);
+    cache.volume = targetVolume;
+  }
+
+  cacheRef.current[key] = cache;
 }
 
 function startLoop(player) {
@@ -239,6 +266,7 @@ export function useEngineAudio({ enabled, rpm, rpmVel, gear, throttle, throttleH
   const shiftDownB = useAudioPlayer(SHIFT_SOUNDS.down);
   const startedRef = useRef(false);
   const lastLoopUpdateRef = useRef({ at: 0, rpm: MIN_RPM, rpmVel: 0, throttle: 0, volume: 0 });
+  const appliedParamsRef = useRef({});
   const processedShiftRef = useRef(null);
   const shiftPoolRef = useRef({ UP: 0, DOWN: 0 });
   const shiftFxRef = useRef(null);
@@ -273,16 +301,22 @@ export function useEngineAudio({ enabled, rpm, rpmVel, gear, throttle, throttleH
   }, []);
 
   useEffect(() => {
+    const loopPlayers = [...Object.values(engineLoopPlayers), gearWhine, airbox];
+
     if (enabled && !startedRef.current) {
-      [...Object.values(engineLoopPlayers), gearWhine, airbox].forEach(startLoop);
+      appliedParamsRef.current = {};
+      loopPlayers.forEach((player) => setPlayerVolume(player, 0));
+      loopPlayers.forEach(startLoop);
       startedRef.current = true;
     }
     if (!enabled && startedRef.current) {
-      [...Object.values(engineLoopPlayers), gearWhine, airbox].forEach(stopLoop);
+      loopPlayers.forEach((player) => setPlayerVolume(player, 0));
+      loopPlayers.forEach(stopLoop);
       audioMotionRef.current.rpm = MIN_RPM;
       Object.keys(audioMotionRef.current.volume).forEach((key) => {
         audioMotionRef.current.volume[key] = 0;
       });
+      appliedParamsRef.current = {};
       startedRef.current = false;
     }
   }, [enabled, idle, low, mid, high, gearWhine, airbox]);
@@ -295,6 +329,7 @@ export function useEngineAudio({ enabled, rpm, rpmVel, gear, throttle, throttleH
     if (!shiftFx.active) {
       shiftFxRef.current = null;
     }
+    const forceLoopUpdate = shiftFx.active || rpm >= LIMITER_START_RPM;
 
     const last = lastLoopUpdateRef.current;
     const meaningfulChange =
@@ -333,8 +368,11 @@ export function useEngineAudio({ enabled, rpm, rpmVel, gear, throttle, throttleH
       const normalizedWeight = weights[layer] / totalWeight;
       const targetVolume = volume * MASTER_HEADROOM * limiter.gain * shiftFx.loopGain * driveTone.loopGain * normalizedWeight * throttleGain;
       motion.volume[layer] = slew(motion.volume[layer] || 0, targetVolume, shiftFx.active ? 0.72 : 0.34);
-      setPlayerRate(player, rate);
-      setPlayerVolume(player, motion.volume[layer]);
+      applyLoopParams(appliedParamsRef, `engine:${layer}`, player, {
+        rate,
+        volume: motion.volume[layer],
+        force: forceLoopUpdate
+      });
     });
 
     const rpmNorm = clamp((audibleRpm - MIN_RPM) / (MAX_RPM - MIN_RPM), 0, 1);
@@ -342,14 +380,20 @@ export function useEngineAudio({ enabled, rpm, rpmVel, gear, throttle, throttleH
     const whineRate = clamp(0.72 + rpmNorm * 0.78 + whineGear * 0.045, 0.72, 1.72);
     const whineVolume = volume * 0.16 * driveTone.whineGain * smoothstep(0.2, 0.72, rpmNorm) * (0.55 + 0.45 * audibleThrottle);
     motion.volume.gearWhine = slew(motion.volume.gearWhine || 0, whineVolume, 0.38);
-    setPlayerRate(gearWhine, whineRate);
-    setPlayerVolume(gearWhine, motion.volume.gearWhine);
+    applyLoopParams(appliedParamsRef, 'gearWhine', gearWhine, {
+      rate: whineRate,
+      volume: motion.volume.gearWhine,
+      force: forceLoopUpdate
+    });
 
     const airboxRate = clamp(0.82 + rpmNorm * 0.94 + throttle * 0.08, 0.82, 1.86);
     const airboxVolume = volume * 0.105 * smoothstep(0.64, 0.94, rpmNorm) * Math.pow(audibleThrottle, 0.7);
     motion.volume.airbox = slew(motion.volume.airbox || 0, airboxVolume, 0.42);
-    setPlayerRate(airbox, airboxRate);
-    setPlayerVolume(airbox, motion.volume.airbox);
+    applyLoopParams(appliedParamsRef, 'airbox', airbox, {
+      rate: airboxRate,
+      volume: motion.volume.airbox,
+      force: forceLoopUpdate
+    });
 
     const overrunChance = smoothstep(5200, 9500, rpm) * clamp((-rpmVel - 450) / 5200, 0, 1) * (brakeHeld ? 1 : 0.45);
     if (now >= overrunRef.current.nextAt && overrunChance > 0.18 && throttle < 0.42) {

@@ -14,6 +14,7 @@ iPhone and Android app version of the original Chrome typing extension. Keyboard
 - Mobile audio hardening: playback-rate clamping, throttled loop updates, shift one-shot pooling, master headroom, and AppState stop behavior.
 - Driving feel polish: instant paddle shifts, shift cut/blip envelope, and redline limiter cut pulses.
 - Sound realism pass: cycle-aligned stereo V10 engine loops, gear-dependent transmission whine, lift-off bark, V10 cylinder/bank texture, load-aware tone morphing, varied one-shot pitch, audio-side RPM/layer slew, shift RPM catch, overrun crackles, airbox scream, and throttle-on intake snap.
+- Final mobile tuning: loop-player parameter caching, elapsed-time simulation ticks, and sound-pack peak/RMS reporting for safer real-device mixing.
 
 ## Real engine audio
 
@@ -35,6 +36,7 @@ For a more realistic release build, replace these local files with legally licen
 - `assets/audio/airbox_scream.wav`
 
 Keep the same filenames and the app will use the new samples automatically.
+Run `npm run generate:soundpack` after replacing samples to print a peak/RMS report and catch files that are too loud, too quiet, or too wide when collapsed to mono.
 
 ## Run
 
