@@ -15,6 +15,7 @@ export const AIRBOX_SCREAM = require('../../assets/audio/airbox_scream.wav');
 
 export const DRIVE_SOUNDS = {
   liftOff: require('../../assets/audio/lift_off.wav'),
+  throttleOn: require('../../assets/audio/throttle_on.wav'),
   overrunA: require('../../assets/audio/overrun_a.wav'),
   overrunB: require('../../assets/audio/overrun_b.wav')
 };

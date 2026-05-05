@@ -191,6 +191,36 @@ function oneShotVariation(kind, rpm, throttle, seed) {
   };
 }
 
+function shiftCatchRpm(fx, fallbackRpm) {
+  if (!fx || !fx.startedAt || !fx.rpmBefore || !fx.rpmAfter) {
+    return fallbackRpm;
+  }
+
+  const elapsed = Date.now() - fx.startedAt;
+  const progress = clamp(elapsed / fx.durationMs, 0, 1);
+  if (progress >= 1) {
+    return fallbackRpm;
+  }
+
+  if (fx.direction === 'UP') {
+    if (progress < 0.2) {
+      return fx.rpmBefore;
+    }
+    const catchProgress = smoothstep(0.2, 1, progress);
+    return fx.rpmBefore + (fx.rpmAfter - fx.rpmBefore) * catchProgress;
+  }
+
+  const overshoot = clamp((fx.rpmBefore - fx.rpmAfter) * 0.08, 120, 360);
+  const peak = Math.min(MAX_RPM, fx.rpmAfter + overshoot);
+  if (progress < 0.34) {
+    const up = smoothstep(0, 0.34, progress);
+    return fx.rpmBefore + (peak - fx.rpmBefore) * up;
+  }
+
+  const down = smoothstep(0.34, 1, progress);
+  return peak + (fx.rpmAfter - peak) * down;
+}
+
 export function useEngineAudio({ enabled, rpm, rpmVel, gear, throttle, throttleHeld, brakeHeld, volume, shiftEvent }) {
   const idle = useAudioPlayer(ENGINE_LOOPS.idle);
   const low = useAudioPlayer(ENGINE_LOOPS.low);
@@ -199,6 +229,8 @@ export function useEngineAudio({ enabled, rpm, rpmVel, gear, throttle, throttleH
   const gearWhine = useAudioPlayer(GEAR_WHINE);
   const airbox = useAudioPlayer(AIRBOX_SCREAM);
   const liftOff = useAudioPlayer(DRIVE_SOUNDS.liftOff);
+  const throttleOnA = useAudioPlayer(DRIVE_SOUNDS.throttleOn);
+  const throttleOnB = useAudioPlayer(DRIVE_SOUNDS.throttleOn);
   const overrunA = useAudioPlayer(DRIVE_SOUNDS.overrunA);
   const overrunB = useAudioPlayer(DRIVE_SOUNDS.overrunB);
   const shiftUpA = useAudioPlayer(SHIFT_SOUNDS.up);
@@ -212,6 +244,7 @@ export function useEngineAudio({ enabled, rpm, rpmVel, gear, throttle, throttleH
   const shiftFxRef = useRef(null);
   const previousThrottleHeldRef = useRef(false);
   const liftSeedRef = useRef(0);
+  const throttleOnPoolRef = useRef(0);
   const overrunRef = useRef({ nextAt: 0, pool: 0 });
   const audioMotionRef = useRef({
     rpm: MIN_RPM,
@@ -279,7 +312,8 @@ export function useEngineAudio({ enabled, rpm, rpmVel, gear, throttle, throttleH
     const driveTone = driveToneFor({ rpm, rpmVel, throttle, brakeHeld });
     const motion = audioMotionRef.current;
     const rpmSlew = clamp(0.2 + Math.abs(rpmVel) / 18000 + throttle * 0.08, 0.18, 0.48);
-    motion.rpm = slew(motion.rpm || rpm, driveTone.rateLeadRpm, rpmSlew);
+    const catchTargetRpm = shiftCatchRpm(shiftFxRef.current, driveTone.rateLeadRpm);
+    motion.rpm = slew(motion.rpm || rpm, catchTargetRpm, shiftFx.active ? 0.62 : rpmSlew);
     const audibleRpm = motion.rpm;
 
     const weights = weightsForRpm(audibleRpm);
@@ -342,6 +376,23 @@ export function useEngineAudio({ enabled, rpm, rpmVel, gear, throttle, throttleH
     const wasHeld = previousThrottleHeldRef.current;
     previousThrottleHeldRef.current = Boolean(throttleHeld);
 
+    if (enabled && !wasHeld && throttleHeld && !brakeHeld && rpm >= 1800) {
+      throttleOnPoolRef.current += 1;
+      const pool = [throttleOnA, throttleOnB];
+      const player = pool[throttleOnPoolRef.current % pool.length];
+      const variation = oneShotVariation('LIFT', rpm, throttle, throttleOnPoolRef.current + Math.round(rpm));
+
+      try {
+        setPlayerRate(player, clamp(variation.rate + 0.04, 0.94, 1.16));
+        player.volume = clamp(volume * 0.135 * variation.gain * smoothstep(1800, 6800, rpm), 0, 0.22);
+        Promise.resolve(player.seekTo(0))
+          .then(() => player.play())
+          .catch(() => {});
+      } catch (error) {
+        // Throttle-on snap is decorative.
+      }
+    }
+
     if (!enabled || !wasHeld || throttleHeld || brakeHeld || rpm < 4200 || throttle < 0.35) {
       return;
     }
@@ -357,7 +408,7 @@ export function useEngineAudio({ enabled, rpm, rpmVel, gear, throttle, throttleH
     } catch (error) {
       // Lift-off bark is decorative; skip if the player is not ready.
     }
-  }, [enabled, throttleHeld, brakeHeld, rpm, throttle, volume, liftOff]);
+  }, [enabled, throttleHeld, brakeHeld, rpm, throttle, volume, liftOff, throttleOnA, throttleOnB]);
 
   useEffect(() => {
     if (!enabled || !shiftEvent) return;
@@ -369,6 +420,8 @@ export function useEngineAudio({ enabled, rpm, rpmVel, gear, throttle, throttleH
     shiftFxRef.current = {
       startedAt: Date.now(),
       direction,
+      rpmBefore: shiftEvent.rpmBefore || rpm,
+      rpmAfter: shiftEvent.rpmAfter || rpm,
       ...SHIFT_FX[direction]
     };
     lastLoopUpdateRef.current.at = 0;

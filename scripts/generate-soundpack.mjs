@@ -56,10 +56,12 @@ function engineSample(phase, profile, cylinder) {
 }
 
 function writeWav(name, samples) {
-  const channels = 1;
+  const stereo = samples.left && samples.right;
+  const channels = stereo ? 2 : 1;
   const bitsPerSample = 16;
   const bytesPerSample = bitsPerSample / 8;
-  const dataSize = samples.length * channels * bytesPerSample;
+  const sampleCount = stereo ? Math.min(samples.left.length, samples.right.length) : samples.length;
+  const dataSize = sampleCount * channels * bytesPerSample;
   const buffer = Buffer.alloc(44 + dataSize);
 
   buffer.write('RIFF', 0);
@@ -76,31 +78,52 @@ function writeWav(name, samples) {
   buffer.write('data', 36);
   buffer.writeUInt32LE(dataSize, 40);
 
-  samples.forEach((sample, index) => {
-    const value = clamp(sample, -1, 1);
-    buffer.writeInt16LE(Math.round(value * 32767), 44 + index * bytesPerSample);
-  });
+  for (let index = 0; index < sampleCount; index += 1) {
+    if (stereo) {
+      const left = clamp(samples.left[index], -1, 1);
+      const right = clamp(samples.right[index], -1, 1);
+      const offset = 44 + index * channels * bytesPerSample;
+      buffer.writeInt16LE(Math.round(left * 32767), offset);
+      buffer.writeInt16LE(Math.round(right * 32767), offset + bytesPerSample);
+    } else {
+      const value = clamp(samples[index], -1, 1);
+      buffer.writeInt16LE(Math.round(value * 32767), 44 + index * bytesPerSample);
+    }
+  }
 
   writeFileSync(join(outDir, name), buffer);
+}
+
+function equalPowerPan(sample, pan) {
+  const angle = (clamp(pan, -1, 1) + 1) * Math.PI * 0.25;
+  return {
+    left: sample * Math.cos(angle) * Math.SQRT2,
+    right: sample * Math.sin(angle) * Math.SQRT2
+  };
 }
 
 function generateLoop(name, rpm, cycles, profile) {
   const firingHz = (rpm / 60) * 5;
   const durationSec = cycles / firingHz;
   const total = Math.round(sampleRate * durationSec);
-  const samples = new Float32Array(total);
+  const left = new Float32Array(total);
+  const right = new Float32Array(total);
 
   for (let i = 0; i < total; i += 1) {
     const loopPhase = i / total;
     const cyclePosition = loopPhase * cycles;
     const cyclePhase = cyclePosition % 1;
     const cylinder = Math.floor(cyclePosition) % V10_TEXTURE.length;
+    const texture = V10_TEXTURE[cylinder];
     const slowPhase = (i / total) * Math.PI * 2;
     const loadPulse = 0.88 + Math.sin(slowPhase * profile.loadRate) * 0.035;
-    samples[i] = engineSample(cyclePhase, profile, cylinder) * profile.amp * loadPulse;
+    const sample = engineSample(cyclePhase, profile, cylinder) * profile.amp * loadPulse;
+    const rendered = equalPowerPan(sample, texture.bank * profile.stereoWidth);
+    left[i] = rendered.left;
+    right[i] = rendered.right;
   }
 
-  writeWav(name, samples);
+  writeWav(name, { left, right });
 }
 
 function generateShiftUp() {
@@ -166,6 +189,24 @@ function generateLiftOff() {
   writeWav('lift_off.wav', samples);
 }
 
+function generateThrottleOn() {
+  const total = Math.floor(sampleRate * 0.12);
+  const samples = new Float32Array(total);
+
+  for (let i = 0; i < total; i += 1) {
+    const t = i / sampleRate;
+    const attack = Math.min(1, t * 260);
+    const env = attack * Math.exp(-t * 32);
+    const chirpHz = 1100 + 1750 * Math.exp(-t * 26);
+    const phase = Math.PI * 2 * chirpHz * t;
+    const intake = Math.sin(phase) * 0.34 + Math.sin(phase * 1.54 + 0.8) * 0.18;
+    const rasp = cyclicNoise(phase * 0.8 + 2.3, 0.58) * 0.42;
+    samples[i] = tanhDrive((intake + rasp) * env, 2.9) * 0.44;
+  }
+
+  writeWav('throttle_on.wav', samples);
+}
+
 function generateOverrunPop(name, seed, brightness) {
   const total = Math.floor(sampleRate * 0.11);
   const samples = new Float32Array(total);
@@ -211,6 +252,7 @@ generateLoop('v10_idle.wav', 1500, 200, {
   whineMul: 9.0,
   mech: 0.03,
   bankColor: 0.04,
+  stereoWidth: 0.18,
   drive: 1.8,
   loadRate: 2
 });
@@ -224,6 +266,7 @@ generateLoop('v10_low.wav', 3600, 360, {
   whineMul: 10.5,
   mech: 0.04,
   bankColor: 0.06,
+  stereoWidth: 0.24,
   drive: 2.25,
   loadRate: 3
 });
@@ -237,6 +280,7 @@ generateLoop('v10_mid.wav', 6900, 580, {
   whineMul: 11.2,
   mech: 0.045,
   bankColor: 0.09,
+  stereoWidth: 0.3,
   drive: 2.8,
   loadRate: 4
 });
@@ -250,6 +294,7 @@ generateLoop('v10_high.wav', 10100, 670, {
   whineMul: 12.4,
   mech: 0.05,
   bankColor: 0.12,
+  stereoWidth: 0.36,
   drive: 3.3,
   loadRate: 5
 });
@@ -258,6 +303,7 @@ generateShiftUp();
 generateShiftDown();
 generateGearWhine();
 generateLiftOff();
+generateThrottleOn();
 generateOverrunPop('overrun_a.wav', 1, 0.74);
 generateOverrunPop('overrun_b.wav', 2, 0.92);
 generateAirboxScream();
