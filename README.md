@@ -13,7 +13,7 @@ iPhone and Android app version of the original Chrome typing extension. Keyboard
 - `expo-audio` playback with local assets, looping layers, playback-rate pitch changes, and volume crossfades.
 - Mobile audio hardening: playback-rate clamping, throttled loop updates, shift one-shot pooling, master headroom, and AppState stop behavior.
 - Driving feel polish: instant paddle shifts, shift cut/blip envelope, and redline limiter cut pulses.
-- Sound realism pass: cycle-aligned engine loops, gear-dependent transmission whine, lift-off bark, V10 cylinder/bank texture, load-aware tone morphing, and varied one-shot pitch.
+- Sound realism pass: cycle-aligned engine loops, gear-dependent transmission whine, lift-off bark, V10 cylinder/bank texture, load-aware tone morphing, varied one-shot pitch, audio-side RPM/layer slew, overrun crackles, and airbox scream.
 
 ## Real engine audio
 
@@ -29,6 +29,9 @@ For a more realistic release build, replace these local files with legally licen
 - `assets/audio/shift_down.wav`
 - `assets/audio/gear_whine.wav`
 - `assets/audio/lift_off.wav`
+- `assets/audio/overrun_a.wav`
+- `assets/audio/overrun_b.wav`
+- `assets/audio/airbox_scream.wav`
 
 Keep the same filenames and the app will use the new samples automatically.
 

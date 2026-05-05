@@ -11,7 +11,10 @@ export const SHIFT_SOUNDS = {
 };
 
 export const GEAR_WHINE = require('../../assets/audio/gear_whine.wav');
+export const AIRBOX_SCREAM = require('../../assets/audio/airbox_scream.wav');
 
 export const DRIVE_SOUNDS = {
-  liftOff: require('../../assets/audio/lift_off.wav')
+  liftOff: require('../../assets/audio/lift_off.wav'),
+  overrunA: require('../../assets/audio/overrun_a.wav'),
+  overrunB: require('../../assets/audio/overrun_b.wav')
 };

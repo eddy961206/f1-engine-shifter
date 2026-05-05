@@ -166,6 +166,42 @@ function generateLiftOff() {
   writeWav('lift_off.wav', samples);
 }
 
+function generateOverrunPop(name, seed, brightness) {
+  const total = Math.floor(sampleRate * 0.11);
+  const samples = new Float32Array(total);
+
+  for (let i = 0; i < total; i += 1) {
+    const t = i / sampleRate;
+    const env = Math.exp(-t * (36 + seed * 3)) * Math.min(1, t * 240);
+    const crackPhase = Math.PI * 2 * (520 + brightness * 760 * Math.exp(-t * 28)) * t;
+    const snap = t < 0.026 ? cyclicNoise(crackPhase * (1.3 + seed * 0.08), 0.9) * 0.55 : 0;
+    const tail = Math.sin(crackPhase + seed) * 0.28 + cyclicNoise(crackPhase * 0.7 + seed, 0.46) * 0.35;
+    samples[i] = tanhDrive((snap + tail) * env, 3.7) * 0.48;
+  }
+
+  writeWav(name, samples);
+}
+
+function generateAirboxScream() {
+  const total = Math.floor(sampleRate * 1.0);
+  const samples = new Float32Array(total);
+  const cycles = 510;
+
+  for (let i = 0; i < total; i += 1) {
+    const loopPhase = i / total;
+    const phase = Math.PI * 2 * cycles * loopPhase;
+    const flutter = Math.sin(Math.PI * 2 * 11 * loopPhase) * 0.04 + Math.sin(Math.PI * 2 * 23 * loopPhase + 0.6) * 0.018;
+    const scream =
+      Math.sin(phase + flutter) * 0.44 +
+      Math.sin(phase * 1.5 + 1.1) * 0.24 +
+      Math.sin(phase * 2.02 + 0.4) * 0.12 +
+      cyclicNoise(phase * 0.23, 0.12);
+    samples[i] = tanhDrive(scream, 1.9) * 0.34;
+  }
+
+  writeWav('airbox_scream.wav', samples);
+}
+
 generateLoop('v10_idle.wav', 1500, 200, {
   amp: 0.54,
   core: 0.88,
@@ -222,5 +258,8 @@ generateShiftUp();
 generateShiftDown();
 generateGearWhine();
 generateLiftOff();
+generateOverrunPop('overrun_a.wav', 1, 0.74);
+generateOverrunPop('overrun_b.wav', 2, 0.92);
+generateAirboxScream();
 
 console.log(`Generated sound pack in ${outDir}`);
